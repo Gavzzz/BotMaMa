@@ -1,8 +1,9 @@
 import os
 import logging
-from telegram import Update, ForceReply
+from telegram import Update, ForceReply, ReplyKeyboardMarkup
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 import requests
+from dbhelper import DBHelper
 
 API_KEY = os.getenv('API_KEY')
 
@@ -10,8 +11,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
     level=logging.INFO
 )
-
 logger = logging.getLogger(__name__)
+
+db = DBHelper()
+
+def build_keyboard(items):
+    keyboard = [[item] for item in items]
+    markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True)
+    return markup
 
 def start(update: Update, _: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
@@ -29,9 +36,22 @@ def start(update: Update, _: CallbackContext) -> None:
 
 def add_recipe(update: Update, _: CallbackContext) -> None:
     """Allows user to add a new recipe."""
+    user_id = update.message.from_user.id
+    recipes = db.get_items(user_id)
+    recipe_name = update.message.text[5:]
+    if recipe_name in recipes: 
+        update.message.reply_text("Recipe already exists. Please choose a different name.")
+    else:
+        db.add_item(user_id, recipe_name)
+        recipes = db.get_items(user_id)
+        update.message.reply_text("\n".join(recipes))
 
 def view_recipe(update: Update, _: CallbackContext) -> None:
     """Allows user to view an existing recipe."""
+    user_id = update.message.from_user.id
+    recipes = db.get_items(user_id)
+    keyboard = build_keyboard(recipes)
+    update.message.reply_text("Which recipe would you like to view?", reply_markup=keyboard)
 
 def edit_recipe(update: Update, _: CallbackContext) -> None:
     """Allows user to edit the details of a stored recipe."""
@@ -69,4 +89,5 @@ def main() -> None:
 
 
 if __name__ == '__main__':
+    db.setup()
     main()
