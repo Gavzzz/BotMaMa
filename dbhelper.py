@@ -9,6 +9,7 @@ class DBHelper:
         stmt = (''' CREATE TABLE IF NOT EXISTS recipe
                    (recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     recipe_name TEXT NOT NULL,
+                    picture_url TEXT,
                     servings TEXT,
                     user_id INT NOT NULL
                    );''')
@@ -44,6 +45,23 @@ class DBHelper:
         self.conn.execute(stmt, args)
         self.conn.commit()
 
+    def add_picture_url(self, user_id, recipe_name, picture_url):
+        stmt = "UPDATE recipe SET picture_url = (?) WHERE recipe_name = (?) AND user_id = (?)"
+        args = (picture_url, recipe_name, user_id)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
+    def get_picture_url(self, user_id, recipe_name):
+        stmt = "SELECT picture_url FROM recipe WHERE recipe_name = (?) AND user_id = (?) AND picture_url IS NOT NULL"
+        args = (recipe_name, user_id)
+        return [x[0] for x in self.conn.execute(stmt, args)]
+
+    def delete_picture_url(self, user_id, recipe_name):
+        stmt = "UPDATE recipe SET picture_url = NULL where recipe_name = (?) AND user_id = (?)"
+        args = (recipe_name, user_id)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
     def add_servings(self, user_id, recipe_name, servings):
         stmt = "UPDATE recipe SET servings = (?) WHERE recipe_name = (?) AND user_id = (?)"
         args = (servings, recipe_name, user_id)
@@ -54,6 +72,12 @@ class DBHelper:
         stmt = "SELECT servings FROM recipe WHERE recipe_name = (?) AND user_id = (?) AND servings IS NOT NULL"
         args = (recipe_name, user_id)
         return [x[0] for x in self.conn.execute(stmt, args)]
+
+    def delete_servings(self, user_id, recipe_name):
+        stmt = "UPDATE recipe SET servings = NULL where recipe_name = (?) AND user_id = (?)"
+        args = (recipe_name, user_id)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
 
     def add_ingredient(self, user_id, recipe_name, ingredient):
         recipe_id = self.get_recipe_id(user_id, recipe_name)[0]
