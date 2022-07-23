@@ -386,6 +386,7 @@ def change_photo(update: Update, _: CallbackContext) -> int:
     new_photo.download(blob_name) 
     blob = bucket.blob(blob_name)
     blob.upload_from_filename(blob_name)
+    os.remove(blob_name)
     blob.make_public()
     db.add_picture_url(user_id, recipe_name, blob.public_url)
 
