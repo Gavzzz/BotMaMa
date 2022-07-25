@@ -1,11 +1,10 @@
 import os
-import logging
-from telegram import InlineKeyboardButton, ReplyKeyboardRemove, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup
+import logging, datetime, pytz
+from telegram import InlineKeyboardButton, ReplyKeyboardRemove, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, constants, Bot
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler, CallbackQueryHandler
 from dbhelper import DBHelper
 from google.cloud import storage
 from firebase import firebase
-from datetime import datetime
 
 API_KEY = os.getenv('API_KEY')
 
@@ -13,6 +12,7 @@ NAME, PHOTO, SERVINGS, INGREDIENTS, STEPS, SEND_RECIPE, CONFIRMATION, DELETION =
 RECIPE_CHOICE, RECIPE_PART, EDIT_NAME, EDIT_PHOTO, EDIT_SERVINGS, EDIT_INGREDIENTS, EDIT_STEPS, END_ROUTES = range(8,16)
 ADD_INGREDIENT, UPDATE_INGREDIENT, SAVE_INGREDIENT, DELETE_INGREDIENT = range(16,20)
 ADD_STEP, UPDATE_STEP, SAVE_STEP, DELETE_STEP = range(20,24)
+SEND_USER_RECIPE = 24
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
@@ -52,40 +52,55 @@ def get_step_list(user_id, recipe_name):
     return step_list
 
 def full_recipe(user_id, recipe_name):
+    if not db.is_public(user_id, recipe_name):
+        msg = recipe_name + " [private]\n\n"
+    else:
+        msg = recipe_name + " [public]\n\n"
     servings = db.get_servings(user_id, recipe_name)
     ingredients = get_ingredient_list(user_id, recipe_name)
     steps = get_step_list(user_id, recipe_name)
     if len(servings) == 0:
-        msg = recipe_name + "\n\n" + ingredients + "\n" + steps
+        msg = msg + ingredients + "\n" + steps
     else:
-        msg = recipe_name + "\n\n" + "Serves " + servings[0] + "\n\n" + ingredients + "\n" + steps
+        msg = msg + "Serves " + servings[0] + "\n\n" + ingredients + "\n" + steps
     return msg
 
 def start(update: Update, _: CallbackContext) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
+    username = user.username
+    if username == None:
+        db.add_user(user.id, update.message.chat_id, "None")
+    else:
+        db.add_user(user.id, update.message.chat_id, username)
     update.message.reply_markdown_v2(
         fr"Hi {user.mention_markdown_v2()}\! I'm BotMaMa\! "
         fr"I can help you manage your recipes and even search for new ones from all over the web\.{os.linesep}"
         fr"{os.linesep}To add a new recipe, use /add\."
         fr"{os.linesep}To view your recipes, use /view\."
         fr"{os.linesep}To edit your recipes, use /edit\."
-        fr"{os.linesep}To delete one of your recipes, use /delete\."
-        fr"{os.linesep}Search for new recipes from the internet by using /search along with your search query\."
+        fr"{os.linesep}To delete a recipe, use /delete\."
+        fr"{os.linesep}Search for recipes of other users using /search \@\<username\>\. Currently, this only works for users with a username\."
+        fr"{os.linesep}Alternatively, search for new recipes from the internet with /search \<search term\>\."
     )
 
 def add_recipe(update: Update, _: CallbackContext) -> int:
     """Asks user for the recipe name."""
     _.user_data.clear()
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
+    print(isinstance(update.message.from_user.username, str))
     update.message.reply_text(
-        "Please tell me the name of your new recipe or type /cancel if you change your mind anytime!"
+        "Please tell me the name of your new recipe or type /cancel if you change your mind anytime!\n"
+        "All recipes are set to public by default. You can change this by editing the recipe later. "
+        "Private recipes will not be accessed by other users."
     )
     
     return NAME
-
+ 
 def name(update: Update, _: CallbackContext) -> int:
     """Stores given name and asks for a photo of the recipe."""
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     recipes = db.get_recipes(user_id)
     recipe_name = update.message.text
     if recipe_name in recipes:
@@ -106,6 +121,7 @@ def name(update: Update, _: CallbackContext) -> int:
 
 def photo(update: Update, _:CallbackContext) -> int:
     """Stores the given photo and asks for the yield of the recipe."""
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
     photo = update.message.photo[-1].get_file()
     blob_name = str(update.message.from_user.id) + "-" + _.user_data['recipe name'] + ".jpg"
     photo.download(blob_name) #downloads to local directory
@@ -123,6 +139,7 @@ def photo(update: Update, _:CallbackContext) -> int:
 
 def skip_photo(update: Update, _: CallbackContext) -> int:
     """Skips the photo and asks for the yield of the recipe."""
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
     update.message.reply_text(
         "Don't worry. You can always show Mama the next time!\n"
         "Next, please state the yield of your recipe i.e. how many people or how much food your recipe serves.\n"
@@ -132,6 +149,7 @@ def skip_photo(update: Update, _: CallbackContext) -> int:
 
 def servings(update: Update, _: CallbackContext) -> int:
     """Stores the yield of the recipe and asks for the ingredients needed."""
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
     servings = update.message.text
     recipe_name = _.user_data['recipe name']
     db.add_servings(update.message.from_user.id, recipe_name, servings)
@@ -143,6 +161,7 @@ def servings(update: Update, _: CallbackContext) -> int:
 
 def skip_servings(update: Update, _: CallbackContext) -> int:
     """Skips the recipe yield and asks for the ingredients needed."""
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
     update.message.reply_text(
         "It's okay. Please tell Mama what ingredients are needed next.\n"
         "Type /done when you have entered all the ingredients.")
@@ -151,6 +170,7 @@ def skip_servings(update: Update, _: CallbackContext) -> int:
 def ingredients(update: Update, _: CallbackContext) -> int:
     """Stores the ingredients and asks for the steps."""
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     ingredient = update.message.text
     ingredient_list = db.get_ingredients(user_id, recipe_name)
@@ -171,6 +191,7 @@ def ingredients(update: Update, _: CallbackContext) -> int:
 def steps(update: Update, _: CallbackContext) -> int:
     """Stores the steps of the recipe and ends the conversation."""
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     step = update.message.text
 
@@ -196,6 +217,7 @@ def cancel_add(update: Update, _: CallbackContext) -> int:
     )
 
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     if 'recipe name' in _.user_data:
         recipe_name = _.user_data['recipe name']
         if len(db.get_picture_url(user_id, recipe_name)) != 0:
@@ -208,6 +230,8 @@ def cancel_add(update: Update, _: CallbackContext) -> int:
 def view_recipe(update: Update, _: CallbackContext) -> int:
     """Allows user to view an existing recipe."""
     user_id = update.message.from_user.id
+    _.user_data['user id'] = user_id
+    db.update_username(user_id, update.message.from_user.username)
     recipes = db.get_recipes(user_id)
     if len(recipes) == 0:
         update.message.reply_text("You currently do not have any recipes stored. Use /add to leave your recipes with Mama!")
@@ -219,15 +243,19 @@ def view_recipe(update: Update, _: CallbackContext) -> int:
 
 def send_recipe(update: Update, _: CallbackContext) -> int:
     """Sends the chosen recipe to the user."""
-    user_id = update.message.from_user.id
+    user_id = _.user_data['user id']
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
     recipe_name = update.message.text
     now = datetime.now()
     timestamp = now.strftime("%d%m%Y%H%M%S")
     if recipe_name in db.get_recipes(user_id):
-        photo_url = db.get_picture_url(user_id, recipe_name)
-        if len(photo_url) != 0:
-            update.message.reply_photo(photo_url[0] + "?a=" + timestamp)
-        update.message.reply_text(full_recipe(user_id, recipe_name), reply_markup=ReplyKeyboardRemove())
+        if user_id == update.message.from_user.id or db.is_public(user_id, recipe_name):
+            photo_url = db.get_picture_url(user_id, recipe_name)
+            if len(photo_url) != 0:
+                update.message.reply_photo(photo_url[0] + "?a=" + timestamp)
+            update.message.reply_text(full_recipe(user_id, recipe_name), reply_markup=ReplyKeyboardRemove())
+        else:
+            update.message.reply_text("Sorry, you are unable to view this recipe as it has been set to private.", reply_markup=ReplyKeyboardRemove())
     else:
         update.message.reply_text("Sorry, Mama couldn't find the recipe.", reply_markup=ReplyKeyboardRemove())
 
@@ -236,6 +264,7 @@ def send_recipe(update: Update, _: CallbackContext) -> int:
 def edit_recipe(update: Update, _: CallbackContext) -> int:
     """Allows user to edit the details of a stored recipe."""
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     _.user_data['user id'] = user_id
     recipes = db.get_recipes(user_id)
     if len(recipes) == 0:
@@ -250,6 +279,7 @@ def edit_recipe_inline(update: Update, _: CallbackContext) -> int:
     """Allows user to choose a different recipe to edit when using inline buttons."""
     query = update.callback_query
     query.answer()
+    db.update_username(query.from_user.id, query.from_user.username)
     recipes = db.get_recipes(_.user_data['user id'])
     keyboard = build_inline_keyboard([[recipe] for recipe in recipes])
     query.edit_message_text("Which recipe would you like to edit?")
@@ -262,6 +292,7 @@ def recipe_choice(update: Update, _: CallbackContext) -> int:
     recipe_name.answer()
     _.user_data['recipe name'] = recipe_name.data
     user_id = _.user_data['user id']
+    db.update_username(user_id, recipe_name.from_user.username)
     servings = db.get_servings(user_id, recipe_name.data)
     photo_url = db.get_picture_url(user_id, recipe_name.data)
     recipe = full_recipe(user_id, recipe_name.data)
@@ -275,7 +306,10 @@ def recipe_choice(update: Update, _: CallbackContext) -> int:
         recipe_name.message.reply_photo(photo_url[0] + "?=a" + timestamp)
         buttons.append("photo")
     buttons.append("add servings") if len(servings) == 0 else buttons.append("servings")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(user_id, recipe_name.data):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
 
     recipe_name.message.reply_text(
         recipe + "\nYou are currently editing '" + recipe_name.data + "'.\n"
@@ -285,10 +319,40 @@ def recipe_choice(update: Update, _: CallbackContext) -> int:
     recipe_name.edit_message_reply_markup(None)
     return RECIPE_PART
 
+def toggle_privacy(update: Update, _: CallbackContext) -> int:
+    query = update.callback_query
+    query.answer()
+    user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
+    recipe_name = _.user_data['recipe name']
+    photo_url = db.get_picture_url(user_id, recipe_name)
+
+    buttons = ["recipe name"]
+    if len(photo_url) == 0:
+        buttons.append("add photo")
+    else:
+        now = datetime.now()
+        timestamp = now.strftime("%d%m%Y%H%M%S")
+        recipe_name.message.reply_photo(photo_url[0] + "?=a" + timestamp)
+        buttons.append("photo")
+    buttons.append("add servings") if len(db.get_servings(user_id, recipe_name)) == 0 else buttons.append("servings")
+    if query.data == "set private":
+        db.change_privacy(user_id, recipe_name, 0)
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+        query.edit_message_text("Recipe has been set to private.\nWhat else would you like to edit?")
+    else:
+        db.change_privacy(user_id, recipe_name, 1)
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
+        query.edit_message_text("Recipe has been set to public.\nWhat else would you like to edit?")
+    query.edit_message_reply_markup(keyboard)
+
+    return RECIPE_PART
+
 def edit_name(update: Update, _: CallbackContext) -> int:
     """Asks user for the new name of the recipe."""
     query = update.callback_query
     query.answer()
+    db.update_username(query.from_user.id, query.from_user.username)
     current_name = _.user_data['recipe name']
     keyboard = [[InlineKeyboardButton("<< back", callback_data=current_name)]]
 
@@ -303,6 +367,7 @@ def change_name(update: Update, _: CallbackContext) -> int:
     """Updates the recipe's name in the database."""
     new_name = update.message.text
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     current_name = _.user_data['recipe name']
 
     if new_name == current_name or new_name in db.get_recipes(user_id) or new_name == "remove yield":
@@ -329,7 +394,10 @@ def change_name(update: Update, _: CallbackContext) -> int:
         blob.make_public()
         db.add_picture_url(user_id, new_name, blob.public_url)
         buttons.append("photo")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(user_id, new_name):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
     update.message.reply_text(
         "The name of your recipe has been changed from '" + current_name + "' to '" + new_name + "'.\n"
         "What else would you like to edit?",
@@ -339,10 +407,10 @@ def change_name(update: Update, _: CallbackContext) -> int:
 
 def edit_photo(update: Update, _: CallbackContext) -> int:
     """Asks user to update the photo."""
-    #TODO
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     if query.data == "photo":
         keyboard = [[InlineKeyboardButton("remove photo", callback_data="remove photo")], [InlineKeyboardButton("<< back", callback_data=recipe_name)]]
@@ -358,6 +426,7 @@ def remove_photo(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     servings = db.get_servings(user_id, recipe_name)
     blob_name = str(user_id) + "-" + recipe_name + ".jpg"
@@ -367,7 +436,10 @@ def remove_photo(update: Update, _: CallbackContext) -> int:
 
     buttons = ["recipe name", "add photo"]
     buttons.append("add servings") if len(servings) == 0 else buttons.append("servings")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(user_id, recipe_name):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
     query.edit_message_text(
         "The picture of your recipe has been removed."
         "\nWhat else would you like to edit?"
@@ -379,6 +451,7 @@ def change_photo(update: Update, _: CallbackContext) -> int:
     """Updates the picture of the recipe."""
     new_photo = update.message.photo[-1].get_file()
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     blob_name = str(user_id) + "-" + recipe_name + ".jpg"
     if len(db.get_picture_url(user_id, recipe_name)) != 0:
@@ -386,13 +459,17 @@ def change_photo(update: Update, _: CallbackContext) -> int:
     new_photo.download(blob_name) 
     blob = bucket.blob(blob_name)
     blob.upload_from_filename(blob_name)
+    os.remove(blob_name)
     blob.make_public()
     db.add_picture_url(user_id, recipe_name, blob.public_url)
 
     buttons = ["recipe name", "photo"]
     servings = db.get_servings(update.message.from_user.id, _.user_data['recipe name'])
     buttons.append("add servings") if len(servings) == 0 else buttons.append("servings")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(user_id, recipe_name):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
     update.message.reply_text(
         "The picture of '" + recipe_name + "' has been updated successfully!\n"
         "What else would you like to edit?",
@@ -405,6 +482,7 @@ def edit_servings(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     if query.data == "servings":
         current_serving = db.get_servings(user_id, recipe_name)
@@ -427,12 +505,16 @@ def remove_servings(update: Update, _: CallbackContext) -> int:
     """Removes the yield of the recipe."""
     query = update.callback_query
     query.answer()
+    db.update_username(query.from_user.id, query.from_user.username)
     db.delete_servings(_.user_data['user id'], _.user_data['recipe name'])
     photo_url = db.get_picture_url(_.user_data['user id'], _.user_data['recipe name'])
 
     buttons = ["recipe name", "add servings"]
     buttons.insert(1, "add photo") if len(photo_url) == 0 else buttons.insert(1, "photo")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(_.user_data['user id'], _.user_data['recipe name']):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
     query.edit_message_text(
         "The yield of your recipe has been removed."
         "\nWhat else would you like to edit?"
@@ -444,6 +526,7 @@ def change_servings(update: Update, _: CallbackContext) -> int:
     """Updates the serving stored in the database."""
     new_serving = update.message.text
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     current_serving = db.get_servings(user_id, recipe_name)
     photo_url = db.get_picture_url(user_id, recipe_name)
@@ -451,7 +534,10 @@ def change_servings(update: Update, _: CallbackContext) -> int:
 
     buttons = ["recipe name", "servings"]
     buttons.insert(1, "add photo") if len(photo_url) == 0 else buttons.insert(1, "photo")
-    keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["<< back to list of recipes"]])
+    if not db.is_public(user_id, recipe_name):
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set public"], ["<< back to list of recipes"]])
+    else:
+        keyboard = build_inline_keyboard([buttons, ["ingredients", "directions"], ["set private"], ["<< back to list of recipes"]])
     if len(current_serving) == 0:
         update.message.reply_text(
             "Your recipe now serves " + new_serving + ".\n"
@@ -471,6 +557,7 @@ def edit_ingredients(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     ingredient_list = get_ingredient_list(user_id, recipe_name)
     keyboard = [[
@@ -493,6 +580,7 @@ def ingredients_list_operation(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     if query.data == "add":
         keyboard = build_inline_keyboard([["<< back"]])
@@ -517,6 +605,7 @@ def add_ingredient(update: Update, _:CallbackContext) -> int:
     """Adds the given ingredient to the ingredient list."""
     ingredient = update.message.text
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     if ingredient in db.get_ingredients(user_id, recipe_name):
         keyboard = build_inline_keyboard([["<< back"]])
@@ -541,6 +630,7 @@ def update_ingredient(update: Update, _: CallbackContext) -> int:
     """Asks user what they would like to update the selected ingredient to."""
     ingredient = update.callback_query
     ingredient.answer()
+    db.update_username(ingredient.from_user.id, ingredient.from_user.username)
     _.user_data['ingredient'] = ingredient.data
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("<< back", callback_data="edit")]])
 
@@ -553,6 +643,7 @@ def save_ingredient(update: Update, _: CallbackContext) -> int:
     new_ingredient = update.message.text
     current_ingredient = _.user_data['ingredient']
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     if new_ingredient in db.get_ingredients(user_id, recipe_name):
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("<< back", callback_data="edit")]])
@@ -579,6 +670,7 @@ def delete_ingredient(update: Update, _: CallbackContext) -> int:
     ingredient = update.callback_query
     ingredient.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, ingredient.from_user.username)
     recipe_name = _.user_data['recipe name']
     db.delete_ingredient(user_id, recipe_name, ingredient.data)
     ingredients = db.get_ingredients(user_id, recipe_name)
@@ -597,6 +689,7 @@ def edit_steps(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     step_list = get_step_list(user_id, recipe_name)
     keyboard = [[
@@ -619,6 +712,7 @@ def steps_list_operation(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     if query.data == "add":
         steps = db.get_steps(user_id, recipe_name)
@@ -647,6 +741,7 @@ def add_step(update: Update, _:CallbackContext) -> int: # only allows user to ap
     """Adds the given step to the end of the list of steps."""
     step = update.message.text
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     keyboard = [[
         InlineKeyboardButton("add a step", callback_data="add"),
@@ -666,6 +761,7 @@ def update_step(update: Update, _: CallbackContext) -> int:
     """Asks user what they would like to update the selected step to."""
     step = update.callback_query
     step.answer()
+    db.update_username(step.from_user.id, step.from_user.username)
     _.user_data['step'] = step.data
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("<< back", callback_data="edit")]])
     step.edit_message_text("What would you like to change the step '" + step.data + "' to?")
@@ -677,6 +773,7 @@ def save_step(update: Update, _: CallbackContext) -> int:
     new_step = update.message.text
     current_step = _.user_data['step']
     user_id = _.user_data['user id']
+    db.update_username(user_id, update.message.from_user.username)
     recipe_name = _.user_data['recipe name']
     db.update_step(user_id, recipe_name, current_step, new_step)
     steps = db.get_steps(user_id, recipe_name)
@@ -699,6 +796,7 @@ def delete_step(update: Update, _: CallbackContext) -> int:
     query = update.callback_query
     query.answer()
     user_id = _.user_data['user id']
+    db.update_username(user_id, query.from_user.username)
     recipe_name = _.user_data['recipe name']
     db.delete_step(user_id, recipe_name, query.data)
     steps = db.get_steps(user_id, recipe_name)
@@ -728,6 +826,7 @@ def exit(update: Update, _: CallbackContext) -> int:
 def delete_recipe(update: Update, _: CallbackContext) -> int:
     """Asks user for a recipe to delete."""
     user_id = update.message.from_user.id
+    db.update_username(user_id, update.message.from_user.username)
     _.user_data['user id'] = user_id
     recipes = db.get_recipes(user_id)
     if len(recipes) == 0:
@@ -742,6 +841,7 @@ def confirmation(update: Update, _: CallbackContext) -> int:
     """Makes sure user deletes the correct recipe."""
     recipe_name = update.callback_query
     recipe_name.answer()
+    db.update_username(recipe_name.from_user.id, recipe_name.from_user.username)
     _.user_data["recipe name"] = recipe_name.data
     keyboard = build_inline_keyboard([["yes", "no"]])
     recipe_name.edit_message_text(
@@ -754,6 +854,7 @@ def deletion(update: Update, _: CallbackContext) -> None:
     """Deletes recipe from the database."""
     answer = update.callback_query
     answer.answer()
+    db.update_username(answer.from_user.id, answer.from_user.username)
     if answer.data == "yes":
         user_id = _.user_data['user id']
         recipe_name = _.user_data["recipe name"]
@@ -769,15 +870,51 @@ def deletion(update: Update, _: CallbackContext) -> None:
 
 def search_recipes(update: Update, _: CallbackContext) -> None:
     """Returns the related recipes from the given keywords."""
-    input = update.message.text
-    keywords_list = list(map(lambda x: str(x), input.split(" ")[1:]))
+    input = update.message.text[8:]
+    update.message.reply_text("searching for term...")
+
+def search_user(update: Update, _: CallbackContext) -> int:
+    username = update.message.text[9:]
+    user_id = db.get_user_id(username)
+    db.update_username(update.message.from_user.id, update.message.from_user.username)
+    if len(user_id) == 0:
+        update.message.reply_text(
+            "Sorry, it seems like Mama doesn't know this person!\n"
+            "If their username was changed recently, you may check back again in a day as Mama's database may not have been updated yet."
+        )
+        return ConversationHandler.END
+    else:
+        _.user_data['user id'] = user_id[0]
+        recipes = db.get_public_recipes(user_id[0])
+        if len(recipes) == 0:
+            update.message.reply_text(
+                "Hmm, it seems like this user has not left any recipes with Mama or they do not have any public recipes!"
+            )
+            return ConversationHandler.END
+        else:                
+            keyboard = build_keyboard(recipes)
+            update.message.reply_text(
+                "Which recipe from @" + username + " would you like to view?", 
+                reply_markup=keyboard)    
+        return SEND_RECIPE
+
+def update_usernames(_: CallbackContext) -> None:
+    chat_ids = db.get_all_chat_id()
+    for id in chat_ids:
+        _.bot.send_message(chat_id=id, text='testing job queue')
+        username = Bot.get_chat(id).username
+        if username != None:
+            db.update_username(id, username)
 
 def main() -> None:
     # Create the Updater and pass it your bot's token.
     updater = Updater(API_KEY)
+    job = updater.job_queue
 
     # Get the dispatcher to register handlers
     dispatcher = updater.dispatcher
+
+    job.run_daily(update_usernames, datetime.time(hour=21, minute=50, tzinfo=pytz.timezone('Asia/Singapore')))
 
     # Create the Conversation Handler
     add_recipe_conv_handler = ConversationHandler(
@@ -793,7 +930,7 @@ def main() -> None:
     )
 
     view_recipe_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("view", view_recipe)],
+        entry_points=[CommandHandler("view", view_recipe), CommandHandler("search", search_user)],
         states = {
             SEND_RECIPE: [MessageHandler(Filters.text & (~ Filters.command), send_recipe)]
         },
@@ -811,6 +948,7 @@ def main() -> None:
                 CallbackQueryHandler(edit_servings, pattern="^servings|add servings$"),
                 CallbackQueryHandler(edit_ingredients, pattern="^ingredients$"),
                 CallbackQueryHandler(edit_steps, pattern="^directions$"),
+                CallbackQueryHandler(toggle_privacy, pattern="^set public|set private$"),
                 CallbackQueryHandler(edit_recipe_inline, pattern="^<< back to list of recipes$")
             ],
             EDIT_NAME: [
@@ -876,11 +1014,11 @@ def main() -> None:
 
     # on different commands - answer in Telegram
     dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(add_recipe_conv_handler, 4)
-    dispatcher.add_handler(view_recipe_conv_handler, 3)
-    dispatcher.add_handler(edit_recipe_conv_handler, 2)
-    dispatcher.add_handler(delete_recipe_conv_handler, 1)
-    dispatcher.add_handler(CommandHandler("search", search_recipes))
+    dispatcher.add_handler(add_recipe_conv_handler, 5)
+    dispatcher.add_handler(edit_recipe_conv_handler, 4)
+    dispatcher.add_handler(delete_recipe_conv_handler, 3)
+    dispatcher.add_handler(CommandHandler("search", search_recipes, filters=(~Filters.entity(constants.MESSAGEENTITY_MENTION))), 2)
+    dispatcher.add_handler(view_recipe_conv_handler, 1)
 
     # Start the Bot
     updater.start_polling()
