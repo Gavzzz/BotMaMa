@@ -6,12 +6,21 @@ class DBHelper:
         self.conn = sqlite3.connect(dbname, check_same_thread=False)
 
     def setup(self):
+        stmt = (''' CREATE TABLE IF NOT EXISTS user
+                    (user_id INT,
+                     chat_id INT,
+                     username TEXT,
+                     PRIMARY KEY(user_id, chat_id)
+                    );''')
+        self.conn.execute(stmt)
         stmt = (''' CREATE TABLE IF NOT EXISTS recipe
                    (recipe_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     recipe_name TEXT NOT NULL,
                     picture_url TEXT,
                     servings TEXT,
-                    user_id INT NOT NULL
+                    user_id INT NOT NULL,
+                    public INT NOT NULL,
+                    FOREIGN KEY(user_id) REFERENCES user(user_id) ON UPDATE CASCADE ON DELETE CASCADE
                    );''')
         self.conn.execute(stmt)
         stmt = (''' CREATE TABLE IF NOT EXISTS ingredient
@@ -28,11 +37,45 @@ class DBHelper:
         self.conn.execute(stmt)
         self.conn.commit()
 
-    def add_recipe(self, user_id, recipe_name):
-        stmt = "INSERT INTO recipe (recipe_name, user_id) VALUES (?, ?)"
-        args = (recipe_name, user_id)
+
+    def add_user(self, user_id, chat_id, username):
+        stmt = "INSERT OR IGNORE INTO user (user_id, chat_id, username) VALUES (?, ?, ?)"
+        args = (user_id, chat_id, username)
         self.conn.execute(stmt, args)
         self.conn.commit()
+
+    def update_username(self, user_id, username):
+        stmt = "UPDATE user SET username = (?) WHERE user_id = (?) AND username NOT IN (?)"
+        args = (username, user_id, (username))
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
+    def get_user_id(self, username):
+        stmt = "SELECT user_id FROM user WHERE username = (?)"
+        args = (username, )
+        return [x[0] for x in self.conn.execute(stmt, args)]
+
+    def get_all_chat_id(self):
+        stmt = "SELECT chat_id FROM user"
+        return [x[0] for x in self.conn.execute(stmt)]
+
+    def change_privacy(self, user_id, recipe_name, privacy):
+        stmt = "UPDATE recipe SET public = (?) WHERE user_id = (?) AND recipe_name = (?)"
+        args = (privacy, user_id, recipe_name)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
+    def add_recipe(self, user_id, recipe_name):
+        stmt = "INSERT INTO recipe (recipe_name, user_id, public) VALUES (?, ?, ?)"
+        args = (recipe_name, user_id, 1)
+        self.conn.execute(stmt, args)
+        self.conn.commit()
+
+    def is_public(self, user_id, recipe_name):
+        stmt = "SELECT public FROM recipe WHERE recipe_name = (?) AND user_id = (?)"
+        args = (recipe_name, user_id)
+        l = [x[0] for x in self.conn.execute(stmt, args)]
+        return l[0] == 1
 
     def get_recipe_id(self, user_id, recipe_name):
         stmt = "SELECT recipe_id FROM recipe WHERE recipe_name = (?) AND user_id = (?)"
@@ -142,6 +185,11 @@ class DBHelper:
     def get_recipes(self, user_id):
         stmt = "SELECT recipe_name FROM recipe WHERE user_id = (?)"
         args = (user_id, )
+        return [x[0] for x in self.conn.execute(stmt, args)]
+    
+    def get_public_recipes(self, user_id):
+        stmt = "SELECT recipe_name FROM recipe WHERE user_id = (?) AND public = (?)"
+        args = (user_id, 1)
         return [x[0] for x in self.conn.execute(stmt, args)]
 
         
